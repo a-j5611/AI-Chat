@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
-import os
 import re
 import time
 import uuid
@@ -191,12 +190,6 @@ class SessionStore:
         data["title"] = (title or "").strip()[:MAX_TITLE]
         self.save(data)
 
-    def prune(self, keep: int = 200) -> None:
-        """只保留最近 keep 个会话，避免目录无限增长。"""
-        items = self.list()
-        for meta in items[keep:]:
-            self.delete(meta["id"])
-
 
 _store: SessionStore | None = None
 
@@ -206,3 +199,4 @@ def store() -> SessionStore:
     if _store is None:
         _store = SessionStore()
     return _store
+

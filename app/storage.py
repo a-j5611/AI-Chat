@@ -39,8 +39,6 @@ class ModelStorage:
     def blob_file(self, digest: str) -> Path:
         return self.blobs_dir / digest.replace(":", "-")
 
-    def readable(self) -> bool:
-        return self.dir.exists()
 
     # -------------------------------------------------- 清单
     @staticmethod
@@ -87,23 +85,7 @@ class ModelStorage:
         return out
 
     # -------------------------------------------------- 体积
-    def blob_size(self, digest: str) -> int:
-        path = self.blob_file(digest)
-        try:
-            return path.stat().st_size
-        except Exception:
-            return 0
 
-    def dir_usage(self) -> int:
-        total = 0
-        for root in (self.blobs_dir, self.manifests_dir):
-            try:
-                for path in root.rglob("*"):
-                    if path.is_file():
-                        total += path.stat().st_size
-            except Exception:
-                pass
-        return total
 
     # -------------------------------------------------- 计划
     def plan_delete(self, model_digest: str) -> dict:
@@ -197,31 +179,7 @@ class ModelStorage:
                 "orphan_manifests": orphan_manifests}
 
     # -------------------------------------------------- 未完成的下载
-    def partials(self) -> list[dict]:
-        """列出未完成下载留下的分片文件（下载中断后用于续传或清理）。"""
-        out: list[dict] = []
-        try:
-            for path in self.blobs_dir.iterdir():
-                if not path.is_file() or "partial" not in path.name:
-                    continue
-                try:
-                    stat = path.stat()
-                except Exception:
-                    continue
-                out.append({"path": path, "size": stat.st_size,
-                            "mtime": stat.st_mtime,
-                            "digest": path.name.split("-partial")[0]})
-        except Exception:
-            pass
-        out.sort(key=lambda d: -d["size"])
-        return out
 
-    def partials_size(self) -> int:
-        return sum(d["size"] for d in self.partials())
-
-    def remove_partials(self) -> dict:
-        """删除所有未完成下载的分片（用于无法续传时彻底重来）。"""
-        return self.remove([(d["path"], d["size"]) for d in self.partials()])
 
     # -------------------------------------------------- 执行
     @staticmethod
@@ -249,3 +207,5 @@ class ModelStorage:
                 return f"{num_bytes:.2f} {unit}" if unit != "B" else f"{int(num_bytes)} B"
             num_bytes /= 1024.0
         return "-"
+
+

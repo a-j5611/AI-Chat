@@ -267,10 +267,6 @@ class Segmented(tk.Canvas):
             self._value = values[0] if values else None
         self._redraw()
 
-    def set_labels(self, labels: list):
-        self._segs = [(v, lab) for (v, _), lab in zip(self._segs, labels)]
-        self._redraw()
-
     def apply_theme(self, bg: str | None = None):
         if bg:
             self._bg_owner = bg
@@ -406,9 +402,6 @@ class ScrollFrame(tk.Frame):
 
     def scroll_by(self, units: int):
         self.canvas.yview_scroll(units, "units")
-
-    def scroll_top(self):
-        self.canvas.yview_moveto(0)
 
     def scroll_bottom(self):
         self.canvas.yview_moveto(1.0)

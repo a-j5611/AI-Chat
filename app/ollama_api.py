@@ -133,10 +133,6 @@ class OllamaClient:
             except Exception:
                 pass
 
-    def pull_stream(self, name: str):
-        """产出 {'status','completed','total','digest','error'}"""
-        return self._stream("/api/pull", {"model": name, "stream": True}, timeout=3600)
-
     def chat_stream(self, model: str, messages: list, options: dict | None = None):
         payload = {"model": model, "messages": messages, "stream": True}
         if options:

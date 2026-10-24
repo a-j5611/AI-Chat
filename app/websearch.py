@@ -718,12 +718,6 @@ SEARCH_SYSTEM_PROMPT = """你是一个可以使用联网搜索结果的助手。
 """
 
 
-def format_sources(results: list[dict]) -> str:
-    """给界面/导出用的来源列表（纯文本）。"""
-    return "\n".join(f"[{i}] {r.get('title','')}\n    {r.get('url','')}"
-                     for i, r in enumerate(results, 1))
-
-
 def deep_search(question: str, cfg: dict, client=None, model: str = "",
                 progress=None) -> dict:
     """深度检索：多查询展开 + 多引擎并发 + 批量抓正文。
@@ -798,3 +792,4 @@ def test_connection(query: str = "DeepSeek", backend: str = "auto",
     return {"ok": True, "backend": used, "count": len(results),
             "sample": results[0]["title"] if results else "",
             "elapsed": time.time() - started}
+

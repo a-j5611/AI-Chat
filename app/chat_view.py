@@ -13,8 +13,7 @@ from . import sessions
 from . import theme as th
 from . import vision
 from .i18n import t as T
-from .ollama_api import RateMeter, human_size
-from .widgets import PillButton, ProgressBar, ScrollFrame, text_width
+from .widgets import PillButton, ScrollFrame
 
 
 class Bubble(tk.Frame):
@@ -136,9 +135,8 @@ class Bubble(tk.Frame):
         if not url:
             return
         try:
-            import webbrowser
-
-            webbrowser.open(url)
+            from .winopen import open_url
+            open_url(url)
         except Exception:
             pass
 
@@ -149,8 +147,6 @@ class Bubble(tk.Frame):
         except Exception:
             pass
 
-    def get_sources(self) -> list:
-        return self._sources
 
     def _sync_sources_head(self):
         if not self._sources:
@@ -202,8 +198,6 @@ class Bubble(tk.Frame):
         if self._photos:
             self.images_row.pack(fill="x", anchor="w", before=self.text_label)
 
-    def get_images(self) -> list:
-        return self._images
 
     def set_thinking(self, text: str):
         self._thinking_text = text
@@ -215,8 +209,6 @@ class Bubble(tk.Frame):
         self.think_label.configure(text=self._thinking_text)
         self._sync_think_head()
 
-    def get_thinking(self) -> str:
-        return self._thinking_text
 
     def has_thinking(self) -> bool:
         return bool(self._thinking_text.strip())
@@ -426,23 +418,6 @@ class ChatView(tk.Frame):
         self.attach_strip = tk.Frame(bottom, bg=th.c("card"))
         self.attach_photos: list = []
 
-        # 下载视觉模型时的进度条 + 失败后的重试/取消
-        self.dl_box = tk.Frame(bottom, bg=th.c("card"))
-        self.dl_label = tk.Label(self.dl_box, text="", bg=th.c("card"),
-                                 fg=th.c("text_muted"), font=th.F(8), anchor="w",
-                                 justify="left", wraplength=760)
-        self.dl_label.pack(fill="x")
-        self.dl_bar = ProgressBar(self.dl_box, height=6, bg=th.c("card"))
-        self.dl_bar.pack(fill="x", pady=(3, 0))
-        self.dl_actions = tk.Frame(self.dl_box, bg=th.c("card"))
-        self.dl_retry_btn = PillButton(self.dl_actions, T("vision.retry"),
-                                       command=self._retry_download, kind="primary",
-                                       height=28, radius=8, font=th.F(9), bg=th.c("card"))
-        self.dl_retry_btn.pack(side="left")
-        PillButton(self.dl_actions, T("vision.cancel"), command=self._cancel_download,
-                   kind="ghost", height=28, radius=8, font=th.F(9),
-                   bg=th.c("card")).pack(side="left", padx=(8, 0))
-
         holder = tk.Frame(bottom, bg=th.c("card_alt"), highlightthickness=1,
                           highlightbackground=th.c("border"), highlightcolor=th.c("accent"))
         holder.pack(fill="x")
@@ -598,6 +573,16 @@ class ChatView(tk.Frame):
             close.bind("<Button-1>", lambda _e, i=idx: self._remove_attachment(i))
 
     # ------------------------------------------------ 视觉模型
+    def views_models_open_downloader(self):
+        """复用模型页的「下载模型…」入口（含打不开时的剪贴板兜底）。"""
+        view = self.app.views.get("models")
+        if view is not None and hasattr(view, "open_downloader"):
+            view.open_downloader()
+            return
+        from .winopen import open_url
+
+        open_url("https://github.com/a-j5611/AI-Downloader-for-Ollama")
+
     def _vision_ready(self) -> bool:
         """确认当前模型能识图；不能则尝试切换或引导下载。"""
         model = self.app.current_model
@@ -632,181 +617,12 @@ class ChatView(tk.Frame):
         # 都没有 → 引导下载
         action, chosen = vision.VisionDialog(self.winfo_toplevel(), model).result
         if action == "gallery":
-            self.app.open_gallery()
+            self.views_models_open_downloader()
         elif action == "download" and chosen:
             self._download_vision(chosen)
         return False
 
-    def _download_vision(self, name: str, resume: bool = False, switch: bool = True):
-        """下载/续传视觉模型，完成后自动切换。
 
-        要点：
-          * 用独立队列与独立轮询，避免和对话事件互相吞掉；
-          * 只有真正跑完才判定成功（旧实现 finally 里无条件发 done，
-            失败也被当成成功，结果切到一个并未安装的模型上）；
-          * 失败时保留分片并给出「重试/取消」，下次拉取 Ollama 会断点续传；
-          * 把待续传的模型名写进配置，重启后仍能从模型页继续。
-        """
-        if getattr(self, "_dl_running", False):
-            self.app.toast(T("vision.downloading", name))
-            return
-        self._dl_running = True
-        self._dl_cancel = threading.Event()
-        self._dl_queue: queue.Queue = queue.Queue()
-        self._dl_model = name
-        self._dl_switch = bool(switch)      # 完成后是否切换为当前模型
-        self._dl_token = getattr(self, "_dl_token", 0) + 1
-        token = self._dl_token
-
-        self.dl_box.pack(fill="x", pady=(0, 6), before=self.input.master)
-        self.dl_label.configure(
-            text=(T("vision.resuming", name) if resume else T("vision.downloading", name)))
-        self.dl_bar.set_value(0.0)
-        self.dl_started = time.time()
-        self.dl_meter = RateMeter()          # 按增量算当前速度，避免续传虚标
-        self.dl_layers = set()
-        self.dl_retry_btn.set_enabled(False)
-        self.dl_actions.pack_forget()
-
-        # 记录待续传模型：应用被杀后仍能提示继续下载
-        self.app.cfg.setdefault("download", {})["pending_model"] = name
-        self.app.save_cfg()
-
-        client = self.app.client
-        q = self._dl_queue
-        cancel = self._dl_cancel
-
-        def worker():
-            ok = False
-            try:
-                for chunk in client.pull_stream(name):
-                    if cancel.is_set():
-                        break
-                    q.put(("dl", chunk))
-                ok = not cancel.is_set()
-            except Exception as exc:
-                q.put(("dl_error", str(exc)))
-            q.put(("dl_finish", (name, ok)))
-
-        self._dl_thread = threading.Thread(target=worker, daemon=True)
-        self._dl_thread.start()
-        self.after(200, lambda: self._poll_download(token))
-
-    def _poll_download(self, token: int):
-        if token != getattr(self, "_dl_token", 0):
-            return
-        finished = None
-        try:
-            while True:
-                kind, payload = self._dl_queue.get_nowait()
-                if kind == "dl":
-                    total = payload.get("total") or 0
-                    done = payload.get("completed") or 0
-                    status = payload.get("status") or ""
-                    digest = payload.get("digest") or ""
-                    prefix = T("vision.downloading", self._dl_model)
-                    if done and done != getattr(self, "_dl_last_done", None):
-                        self._dl_last_done = done
-                        self._dl_last_progress = time.time()
-                        self._dl_stall_warned = False
-                    if total:
-                        # 进度：当前分片的比例；速度：按增量算的当前速率
-                        self.dl_bar.set_value(min(1.0, done / total))
-                        if digest:
-                            self.dl_layers.add(digest)
-                        rate = self.dl_meter.update(done, digest)
-                        parts = [f"{human_size(done)}/{human_size(total)}"]
-                        if rate > 0:
-                            parts.append(f"{human_size(rate)}/s")
-                        if len(self.dl_layers) > 1:
-                            parts.append(T("vision.layer_n", len(self.dl_layers)))
-                        self.dl_label.configure(text=f"{prefix}  " + "  ".join(parts))
-                    elif status:
-                        # verifying sha256 / writing manifest 等阶段
-                        self.dl_label.configure(text=f"{prefix}  {status}")
-                elif kind == "dl_error":
-                    self.dl_error = str(payload)
-                    self.app.log_event("ERROR", f"vision download: {payload}")
-                elif kind == "dl_finish":
-                    finished = payload
-        except queue.Empty:
-            pass
-        # 卡死检测：180 秒没有任何字节进展 -> 很可能是服务端分块账本损坏
-        if (finished is None and getattr(self, "_dl_running", False)
-                and time.time() - getattr(self, "_dl_last_progress", time.time()) > 180):
-            if not getattr(self, "_dl_stall_warned", False):
-                self._dl_stall_warned = True
-                self.app.log_event("WARN", f"download stalled: {self._dl_model}")
-            self.dl_label.configure(text=T("download.stalled", self._dl_model))
-        if finished is not None:
-            name, ok = finished
-            self._dl_running = False
-            self.dl_retry_btn.set_enabled(True)
-            if ok:
-                # 服务端可能"返回成功但并未真正安装"（分块账本损坏时会这样），必须核实
-                try:
-                    installed = name in [m.get("name") for m in (self.app.client.tags() or [])]
-                except Exception:
-                    installed = False
-                if not installed:
-                    ok = False
-                    self.dl_error = T("download.not_installed")
-                    self.app.log_event(
-                        "ERROR", f"download finished but {name} is not installed")
-            if ok:
-                self.dl_bar.set_value(1.0)
-                switching = getattr(self, "_dl_switch", True)
-                done_text = (T("vision.ready", name) if switching
-                             else T("models.pull_done", name))
-                self.dl_label.configure(text=done_text)
-                if switching:
-                    self.app.set_model(name)
-                self.app.toast(done_text)
-                self.app.log_event("INFO", f"download ready: {name}")
-                self.app.cfg.setdefault("download", {})["pending_model"] = ""
-                self.app.save_cfg()
-                getattr(self.app, "_vision_cache", {}).pop(name, None)
-                self.app.refresh_models_view()
-                self.dl_actions.pack_forget()
-                self.after(1500, self.dl_box.pack_forget)
-            else:
-                # 失败：保留分片（下次拉取会续传），给出重试入口
-                reason = getattr(self, "dl_error", "") or T("vision.interrupted")
-                self.dl_label.configure(text=T("vision.failed_keep", name, reason))
-                self.dl_actions.pack(fill="x", pady=(6, 0))
-                self.app.refresh_models_view()
-        else:
-            self.after(200, lambda: self._poll_download(token))
-
-    def _cancel_download(self):
-        self._dl_cancel.set()
-        self._dl_running = False
-        self.dl_label.configure(text=T("vision.cancelled"))
-        self.dl_actions.pack_forget()
-        self.after(900, self.dl_box.pack_forget)
-
-    def _retry_download(self):
-        name = getattr(self, "_dl_model", "") or \
-            (self.app.cfg.get("download") or {}).get("pending_model", "")
-        if not name:
-            return
-        self.app.toast(T("vision.resuming", name))
-        self._download_vision(name, resume=True)
-
-    def resume_pending(self):
-        """供模型页调用：是否有可续传的下载。"""
-        pending = (self.app.cfg.get("download") or {}).get("pending_model") or ""
-        from .storage import ModelStorage
-
-        storage = ModelStorage(self.app.cfg.get("models_dir", ""))
-        has_partial = bool(storage.partials())
-        return pending, has_partial
-
-    def continue_download(self, name: str):
-        """从模型页继续下载（断点续传，不切换当前模型）。"""
-        self._download_vision(name, resume=True, switch=False)
-
-    # ------------------------------------------------ 发送 / 流式
     def _on_return(self, event):
         if event.state & 0x0001:      # Shift
             return None
@@ -1239,9 +1055,6 @@ class ChatView(tk.Frame):
             btn.apply_theme(th.c("card"))
         self.bottom.configure(bg=th.c("card"))
         self.attach_strip.configure(bg=th.c("card"))
-        self.dl_box.configure(bg=th.c("card"))
-        self.dl_label.configure(bg=th.c("card"), fg=th.c("text_muted"))
-        self.dl_bar.apply_theme(th.c("card"))
         self.attach_hint.configure(bg=th.c("card"), fg=th.c("text_faint"))
         bottom = self.input.master.master
         bottom.configure(bg=th.c("card"))

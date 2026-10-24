@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import datetime as _dt
-import os
 import queue
 import sys
 import threading
@@ -540,36 +539,6 @@ class MainWindow(tk.Tk):
         self.refresh_sessions()
 
     # ------------------------------------------------ 模型库
-    def open_gallery(self):
-        """打开「模型库」窗口（自动拉取在线模型列表并下载）。"""
-        from .gallery import ModelGallery
-
-        try:
-            win = ModelGallery(self, self)
-        except Exception as exc:
-            self.event_log.add("ERROR", f"gallery: {exc}")
-            self.toast(str(exc))
-            return None
-        self._galleries.append(win)
-
-        def on_destroy(event=None):
-            # <Destroy> 会因子控件销毁而冒泡上来，只处理窗口自身
-            if event is not None and getattr(event, "widget", None) is not win:
-                return
-            if win in self._galleries:
-                self._galleries.remove(win)
-
-        win.bind("<Destroy>", on_destroy, add="+")
-        self.after(250, lambda: win.apply_theme() if win.winfo_exists() else None)
-        return win
-
-    def refresh_models_view(self):
-        view = self.views.get("models")
-        if view is not None and hasattr(view, "refresh"):
-            try:
-                view.refresh()
-            except Exception:
-                pass
 
     def validate_model(self, auto_switch: bool = True):
         """启动时检查配置里的模型是否还在，避免每次对话 404。"""
@@ -689,7 +658,7 @@ class MainWindow(tk.Tk):
                 if win.winfo_exists():
                     win.apply_theme()
             except Exception as exc:
-                self.event_log.add("ERROR", f"gallery theme: {exc}")
+                self.event_log.add("ERROR", f"models theme: {exc}")
         self.apply_texts()
         # 兜底：把深层容器里残留的旧主题颜色统一迁移到当前主题
         try:
@@ -723,7 +692,7 @@ class MainWindow(tk.Tk):
                 if win.winfo_exists():
                     win.apply_texts()
             except Exception as exc:
-                self.event_log.add("ERROR", f"gallery texts: {exc}")
+                self.event_log.add("ERROR", f"models texts: {exc}")
         # 兜底：重译所有带 _i18n_key 标记的深层控件
         try:
             i18n.retranslate(self)

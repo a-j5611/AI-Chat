@@ -277,6 +277,7 @@ def _derive() -> None:
         "chip": blend(base, card, 0.10 if _current == "light" else 0.18),
         "chip_text": base if _current == "light" else shade(base, 0.25),
     })
+    _reset_index()        # 强调色变了，颜色→语义索引要重建
 
 
 def c(key: str) -> str:
@@ -320,8 +321,43 @@ def _index() -> dict[str, str]:
     return _COLOR_INDEX
 
 
+# 背景类 / 前景类选项（决定残留颜色该换成哪个角色）
+_BG_OPTIONS = {"bg", "background", "highlightbackground", "troughcolor", "activebackground",
+               "selectbackground", "readonlybackground"}
+_FG_OPTIONS = {"fg", "foreground", "insertbackground", "selectforeground", "activeforeground",
+               "disabledforeground"}
+# Windows 上 Tk 的默认 / system 颜色名，渲染出来就是白或浅灰
+_SYSTEM_LIGHT = {
+    "white", "#ffffff", "#fff", "systemwindow", "systembuttonface", "system3dface",
+    "system3dlight", "systeminfobackground", "infobackground",
+}
+_SYSTEM_TEXT = {"black", "#000000", "systemwindowtext", "systemcaptiontext",
+                "systeminfotext", "infotext"}
+_INPUT_CLASSES = {"Entry", "Text", "Listbox", "Spinbox", "TCombobox"}
+
+
+def theme_role_by_option(widget, option: str, value: str):
+    """按「选项类型 + 控件类型」决定目标角色；返回 None 表示不动。"""
+    val = str(value).strip().lower()
+    if option in _FG_OPTIONS:
+        return "text" if val in _SYSTEM_TEXT else None
+    if option in _BG_OPTIONS:
+        if val in _SYSTEM_LIGHT:
+            try:
+                cls = widget.winfo_class()
+            except Exception:
+                cls = ""
+            return "control" if cls in _INPUT_CLASSES else "card"
+    return None
+
+
 def migrate_colors(widget, depth: int = 0) -> int:
-    """递归把控件里仍是「另一套主题」的颜色换成当前主题的同名颜色。"""
+    """递归把控件里仍是「另一套主题」的颜色换成当前主题的同名角色。
+
+    除按颜色查表外，还处理两类"查不到表"的情况：
+      * 有歧义的颜色（浅色 card 与深色 text 同为 #FFFFFF）—— 按选项类型判断；
+      * 系统色名（SystemWindow / SystemButtonFace …）—— 深色下它们仍是白底/白边。
+    """
     if depth > 14:
         return 0
     index = _index()
@@ -339,6 +375,8 @@ def migrate_colors(widget, depth: int = 0) -> int:
             if not value:
                 continue
             role = index.get(str(value).lower())
+            if role is None:
+                role = theme_role_by_option(child, option, value)
             if role is None:
                 continue
             target = c(role)

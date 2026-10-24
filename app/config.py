@@ -51,7 +51,6 @@ DEFAULTS: dict = {
     "window": {"w": 1360, "h": 860, "x": None, "y": None},
     "last_session": "",           # 上次打开的会话 id（启动时自动恢复）
     "download": {
-        "pending_model": "",      # 上次未下载完的模型（中断后可续传）
     },
 }
 

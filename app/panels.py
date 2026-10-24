@@ -3,9 +3,6 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
-import queue
-import subprocess
-import threading
 import tkinter as tk
 from tkinter import filedialog
 
@@ -15,7 +12,7 @@ from . import theme as th
 from .backgrounds import HAS_PIL, PRESET_IDS
 from .i18n import LANG_LABELS, LANGS, t as T
 from .ollama_api import OllamaError, human_size, read_tail
-from .widgets import (PillButton, ProgressBar, ScrollFrame, Segmented, Slider, StatusDot,
+from .widgets import (PillButton, ScrollFrame, Segmented, Slider, StatusDot, 
                       Toggle, alert, confirm, round_rect)
 
 
@@ -56,23 +53,11 @@ class Panel(tk.Frame):
         pass
 
     # 便捷：主题化 Entry
-    def _entry(self, parent, width=0, font=None):
-        entry = tk.Entry(parent, bd=0, relief="flat", bg=th.c("card_alt"), fg=th.c("text"),
-                         insertbackground=th.c("accent"), font=font or th.F(10),
-                         highlightthickness=1, highlightbackground=th.c("border"),
-                         highlightcolor=th.c("accent"))
-        if width:
-            entry.configure(width=width)
-        return entry
-
-
 # ============================================================ 模型
 class ModelsView(Panel):
     title_key = "models.title"
 
     def _build(self):
-        self.pulling = False
-        self.pull_queue: queue.Queue = queue.Queue()
         self.loaded_models: list = []
 
         head = tk.Frame(self, bg=th.c("card"))
@@ -83,52 +68,19 @@ class ModelsView(Panel):
         self.refresh_btn = PillButton(head, T("models.refresh"), command=self.refresh,
                                       kind="ghost", height=30, radius=9)
         self.refresh_btn.pack(side="right")
-        self.add_btn = PillButton(head, T("models.add"), command=self.open_gallery,
-                                  kind="primary", height=30, radius=9)
-        self.add_btn.pack(side="right", padx=(0, 8))
+        self.dl_link_btn = PillButton(head, T("models.download_model"),
+                                      command=self.open_downloader,
+                                      kind="primary", height=30, radius=9)
+        self.dl_link_btn.pack(side="right", padx=(0, 8))
         self.clean_btn = PillButton(head, T("models.clean"), command=self.clean_unused,
                                     kind="ghost", height=30, radius=9)
         self.clean_btn.pack(side="right", padx=(0, 8))
 
-        pull_row = tk.Frame(self, bg=th.c("card"))
-        pull_row.pack(fill="x", padx=18)
-        self.pull_entry = self._entry(pull_row)
-        self.pull_entry.pack(side="left", fill="x", expand=True, ipady=8)
-        self.pull_entry.bind("<Return>", lambda _e: self.pull())
-        self.pull_btn = PillButton(pull_row, T("models.pull"), command=self.pull,
-                                   kind="primary", height=36, radius=9, min_width=92)
-        self.pull_btn.pack(side="right", padx=(8, 0))
-
-        self.progress_box = tk.Frame(self, bg=th.c("card"))
-        self.progress = ProgressBar(self.progress_box, height=8, bg=th.c("card"))
-        self.progress.pack(fill="x", pady=(10, 4))
-        self.progress_label = tk.Label(self.progress_box, text="", bg=th.c("card"),
-                                       fg=th.c("text_muted"), font=th.F(8), anchor="w")
-        self.progress_label.pack(fill="x")
-
-        # 未完成下载的提示条（继续下载 / 删除残留）
-        self.dl_banner = tk.Frame(self, bg=th.c("card_alt"), padx=14, pady=10)
-        self.dl_banner_label = tk.Label(self.dl_banner, text="", bg=th.c("card_alt"),
-                                        fg=th.c("warn"), font=th.F(9), anchor="w",
-                                        justify="left", wraplength=560)
-        self.dl_banner_label.pack(fill="x")
-        banner_row = tk.Frame(self.dl_banner, bg=th.c("card_alt"))
-        banner_row.pack(fill="x", pady=(8, 0))
-        self.dl_continue_btn = PillButton(banner_row, T("download.continue"),
-                                          command=self.continue_download, kind="primary",
-                                          height=30, radius=9, font=th.F(9),
-                                          bg=th.c("card_alt"))
-        self.dl_continue_btn.pack(side="left")
-        self.dl_clean_btn = PillButton(banner_row, T("download.clean"),
-                                       command=self.clean_partials, kind="ghost",
-                                       height=30, radius=9, font=th.F(9),
-                                       bg=th.c("card_alt"))
-        self.dl_clean_btn.pack(side="left", padx=(8, 0))
-        self.dl_repair_btn = PillButton(banner_row, T("download.repair"),
-                                        command=self.repair_download, kind="ghost",
-                                        height=30, radius=9, font=th.F(9),
-                                        bg=th.c("card_alt"))
-        self.dl_repair_btn.pack(side="left", padx=(8, 0))
+        # 提示：模型下载交给 AI Downloader
+        self.dl_hint = tk.Label(self, text=T("models.download_hint"), bg=th.c("card"),
+                                fg=th.c("text_faint"), font=th.F(8), anchor="w",
+                                justify="left", wraplength=620)
+        self.dl_hint.pack(fill="x", padx=18, pady=(8, 0))
 
         self.scroll = ScrollFrame(self, bg_key="card")
         self.scroll.pack(fill="both", expand=True, padx=10, pady=(6, 12))
@@ -137,9 +89,18 @@ class ModelsView(Panel):
     def on_show(self):
         self.refresh()
 
-    def open_gallery(self):
-        """打开模型库窗口（在线获取模型列表并下载）。"""
-        self.app.open_gallery()
+    DOWNLOADER_URL = "https://github.com/a-j5611/AI-Downloader-for-Ollama"
+
+    def open_downloader(self):
+        """模型下载统一交给 AI Downloader（本程序只负责对话）。"""
+        from .winopen import copy_text, open_url
+
+        if open_url(self.DOWNLOADER_URL):
+            self.app.toast(T("models.download_toast"))
+            return
+        # 打不开浏览器：把链接放进剪贴板，用户可直接粘贴
+        copy_text(self, self.DOWNLOADER_URL)
+        self.app.toast(T("models.download_failed", self.DOWNLOADER_URL))
 
     def refresh(self):
         client = self.app.client
@@ -151,144 +112,10 @@ class ModelsView(Panel):
             self.scroll.clear()
             tk.Label(self.scroll.inner, text=str(error), bg=th.c("card"), fg=th.c("err"),
                      font=th.F(10), wraplength=520, justify="left").pack(padx=12, pady=18, anchor="w")
-            self._refresh_download_banner()
             return
         self.loaded_models = result.get("ps") or []
         self._render(result.get("tags") or [])
-        self._refresh_download_banner()
-
     # ------------------------------------------------ 未完成的下载
-    def _refresh_download_banner(self):
-        """有未完成下载分片时，给出「继续下载 / 删除残留」入口。"""
-        from .storage import ModelStorage
-
-        storage = ModelStorage(self.app.cfg.get("models_dir", ""))
-        partials = storage.partials()
-        if not partials or self.pulling:
-            self.dl_banner.pack_forget()
-            return
-        pending = (self.app.cfg.get("download") or {}).get("pending_model") or ""
-        size = ModelStorage.human(sum(p["size"] for p in partials))
-        text = T("download.incomplete", len(partials), size)
-        if pending:
-            text += "　" + T("download.pending_hint", pending)
-        self.dl_banner_label.configure(text=text)
-        self.dl_continue_btn.set_enabled(bool(pending))
-        self.dl_banner.pack(fill="x", padx=18, pady=(10, 0), before=self.scroll)
-
-    def continue_download(self):
-        """从断点继续下载上次未完成的模型。"""
-        pending = (self.app.cfg.get("download") or {}).get("pending_model") or ""
-        if not pending:
-            self.app.toast(T("download.no_pending"))
-            return
-        self.dl_banner.pack_forget()
-        self.views_chat = self.app.views.get("chat")
-        if self.views_chat is not None and hasattr(self.views_chat, "continue_download"):
-            self.app.show_view("chat")
-            self.views_chat.continue_download(pending)
-            self.app.toast(T("vision.resuming", pending))
-        else:
-            self.pull_entry.delete(0, "end")
-            self.pull_entry.insert(0, pending)
-            self.pull()
-
-    def clean_partials(self):
-        """删除所有未完成下载的残留分片。"""
-        from .storage import ModelStorage
-
-        storage = ModelStorage(self.app.cfg.get("models_dir", ""))
-        partials = storage.partials()
-        if not partials:
-            self.app.toast(T("models.clean_none"))
-            return
-        size = ModelStorage.human(sum(p["size"] for p in partials))
-        if not confirm(self.winfo_toplevel(), T("download.clean_confirm", size),
-                       T("download.clean")):
-            return
-        removed = storage.remove_partials()
-        # 分片被 Ollama 占着删不掉时（服务端句柄泄漏），自动重启服务再删一次
-        if storage.partials():
-            self.app.log_event("WARN", "partials locked, restarting ollama service")
-            self.app.toast(T("download.locked_restart"))
-            try:
-                self.app.svc.stop()
-                time.sleep(1.5)
-            except Exception:
-                pass
-            extra = storage.remove_partials()
-            removed = {"removed": removed["removed"] + extra["removed"],
-                       "freed": removed["freed"] + extra["freed"]}
-            try:
-                self.app.svc.start()
-                self.app.svc.wait_up(45)
-            except Exception as exc:
-                self.app.log_event("ERROR", f"restart service: {exc}")
-        freed = ModelStorage.human(removed["freed"])
-        self.app.cfg.setdefault("download", {})["pending_model"] = ""
-        self.app.save_cfg()
-        self.app.toast(T("download.cleaned", freed))
-        self.app.log_event("INFO", f"clean partials: {removed['removed']} files, {freed}")
-        self._refresh_download_banner()
-
-    def repair_download(self):
-        """服务端卡死时的恢复：停服务 → 删除损坏分片 → 起服务 → 重新下载。"""
-        from .storage import ModelStorage
-
-        pending = (self.app.cfg.get("download") or {}).get("pending_model") or ""
-        storage = ModelStorage(self.app.cfg.get("models_dir", ""))
-        size = ModelStorage.human(storage.partials_size())
-        if not confirm(self.winfo_toplevel(), T("download.repair_confirm", size),
-                       T("download.repair")):
-            return
-        self.pulling = True
-        self.pull_btn.set_enabled(False)
-        self.progress_box.pack(fill="x", pady=(10, 0))
-        self.progress.set_value(0.0)
-        self.progress_label.configure(text=T("download.repairing"))
-        svc = self.app.svc
-
-        def work():
-            info = {}
-            try:
-                svc.stop()
-                time.sleep(1.5)
-                info["stopped"] = True
-            except Exception as exc:
-                info["stop_error"] = str(exc)
-            info["removed"] = storage.remove_partials()
-            info["left"] = len(storage.partials())
-            try:
-                svc.start()
-                info["up"] = svc.wait_up(45)
-            except Exception as exc:
-                info["start_error"] = str(exc)
-                info["up"] = False
-            return info
-
-        def done(result, error):
-            self.pulling = False
-            self.pull_btn.set_enabled(True)
-            result = result or {}
-            freed = ModelStorage.human((result.get("removed") or {}).get("freed", 0))
-            self.app.log_event(
-                "INFO", f"repair: removed {freed}, left {result.get('left')}, "
-                        f"service up={result.get('up')}")
-            self._refresh_download_banner()
-            if not result.get("up"):
-                self.progress_label.configure(text=T("svc.start_failed", "timeout"))
-                self.app.toast(T("svc.start_failed", "timeout"))
-                return
-            self.app.toast(T("download.repair_done", freed))
-            if pending:
-                self.pull_entry.delete(0, "end")
-                self.pull_entry.insert(0, pending)
-                self.pull()
-            else:
-                self.progress_box.pack_forget()
-
-        self.app.run_async(work, done)
-
     def _render(self, models: list):
         self.scroll.clear()
         current = self.app.current_model
@@ -350,108 +177,6 @@ class ModelsView(Panel):
                  font=th.F(9)).pack(anchor="w", pady=(6, 0))
 
     # ------------------------------------------------ 操作
-    def pull(self):
-        if self.pulling:
-            return
-        name = self.pull_entry.get().strip()
-        if not name:
-            return
-        self.pulling = True
-        self.pull_btn.set_enabled(False)
-        self.progress_box.pack(fill="x", padx=18, pady=(8, 0), before=self.scroll)
-        self.progress.set_value(0)
-        self.progress_label.configure(text=T("models.pulling", name))
-        self.app.log_event("INFO", f"pull {name}")
-        # 记录待续传模型：中断后模型页会给出「继续下载」
-        self.app.cfg.setdefault("download", {})["pending_model"] = name
-        self.app.save_cfg()
-        self._pull_last_progress = time.time()
-        self._pull_stalled = False
-        self._pull_last_done = None
-
-        client = self.app.client
-        q = self.pull_queue
-
-        def worker():
-            ok = False
-            try:
-                for chunk in client.pull_stream(name):
-                    q.put(("chunk", chunk))
-                ok = True
-            except Exception as exc:
-                q.put(("error", str(exc)))
-            q.put(("done", (name, ok)))
-
-        threading.Thread(target=worker, daemon=True).start()
-        self.after(150, self._poll_pull)
-
-    def _poll_pull(self):
-        finished = None
-        failed = False
-        try:
-            while True:
-                kind, payload = self.pull_queue.get_nowait()
-                if kind == "chunk":
-                    total = payload.get("total") or 0
-                    done = payload.get("completed") or 0
-                    if done and done != getattr(self, "_pull_last_done", None):
-                        self._pull_last_done = done
-                        self._pull_last_progress = time.time()
-                        self._pull_stalled = False
-                    if total:
-                        self.progress.set_value(min(1.0, done / total))
-                    status = payload.get("status") or ""
-                    text = f"{status}  {human_size(done)} / {human_size(total)}" if total else status
-                    if payload.get("error"):
-                        text = f"{T('error')}: {payload['error']}"
-                    self.progress_label.configure(
-                        text=f"{T('models.pulling', self.pull_entry.get().strip())} · {text}")
-                elif kind == "error":
-                    self.progress_label.configure(text=T("chat.error", payload))
-                    self.app.log_event("ERROR", f"pull: {payload}")
-                    failed = True
-                elif kind == "done":
-                    finished = payload
-        except queue.Empty:
-            pass
-        # 卡死检测：180 秒无字节进展 -> 服务端分块账本可能已损坏
-        if (finished is None and self.pulling
-                and time.time() - getattr(self, "_pull_last_progress", time.time()) > 180):
-            if not getattr(self, "_pull_stalled", False):
-                self._pull_stalled = True
-                self.app.log_event("WARN", "pull stalled for 90s")
-            self.progress_label.configure(text=T("download.stalled",
-                                                 self.pull_entry.get().strip()))
-        if finished is not None:
-            name, ok = finished if isinstance(finished, tuple) else (finished, True)
-            self.pulling = False
-            self.pull_btn.set_enabled(True)
-            if ok and not failed:
-                # 核实服务端是否真的装上了（分块账本损坏时会"返回成功但没装"）
-                try:
-                    installed = name in [m.get("name") for m in (self.app.client.tags() or [])]
-                except Exception:
-                    installed = False
-                if not installed:
-                    ok = False
-                    self.app.log_event(
-                        "ERROR", f"pull finished but {name} is not installed")
-            if ok and not failed:
-                self.progress.set_value(1.0)
-                self.progress_label.configure(text=T("models.pull_done", name))
-                self.app.toast(T("models.pull_done", name))
-                self.app.log_event("INFO", f"pull ok: {name}")
-                self.app.cfg.setdefault("download", {})["pending_model"] = ""
-                self.app.save_cfg()
-                self.after(1200, self.progress_box.pack_forget)
-            else:
-                # 失败：分片保留，横幅提供继续/清理
-                self.progress_label.configure(
-                    text=T("vision.failed_keep", name, T("vision.interrupted")))
-            self.refresh()
-        else:
-            self.after(150, self._poll_pull)
-
     def delete_model(self, name: str):
         """完全删除：先按磁盘清单算出能释放多少空间，确认后连数据一起清掉。"""
         from .storage import ModelStorage
@@ -573,23 +298,14 @@ class ModelsView(Panel):
         self.configure(bg=th.c("card"))
         self.title.configure(bg=th.c("card"), fg=th.c("text"))
         self.scroll.apply_theme("card")
-        self.progress_box.configure(bg=th.c("card"))
-        self.progress.apply_theme(th.c("card"))
-        self.progress_label.configure(bg=th.c("card"), fg=th.c("text_muted"))
         self.refresh_btn.apply_theme(th.c("card"))
-        self.add_btn.apply_theme(th.c("card"))
-        self.pull_btn.apply_theme(th.c("card"))
-        self.pull_entry.configure(bg=th.c("card_alt"), fg=th.c("text"),
-                                  insertbackground=th.c("accent"),
-                                  highlightbackground=th.c("border"), highlightcolor=th.c("accent"))
-        self.pull_entry.master.configure(bg=th.c("card"))
+        if getattr(self, "dl_link_btn", None):
+            self.dl_link_btn.apply_theme(th.c("card"))
         self.refresh()
 
     def apply_texts(self):
         self.title.configure(text=T("models.title"))
         self.refresh_btn.set_text(T("models.refresh"))
-        self.add_btn.set_text(T("models.add"))
-        self.pull_btn.set_text(T("models.pull"))
         self.refresh()
 
 
@@ -1467,7 +1183,9 @@ class SettingsView(Panel):
     def _open_dir(self, path: str):
         try:
             if path and os.path.exists(path):
-                os.startfile(path)       # noqa: S606
+                from .winopen import open_path
+
+                open_path(path)
             else:
                 self.app.toast(T("chat.error", path))
         except Exception as exc:
